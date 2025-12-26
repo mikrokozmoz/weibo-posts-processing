@@ -38,7 +38,7 @@
 # 克隆仓库
 # Clone the repository
 
-git clone <repo-url>
+git clone https://github.com/mikrokozmoz/weibo-posts-processing.git
 cd post_analysis
 
 # 安装依赖
