@@ -11,12 +11,16 @@ import pandas as pd
 
 def load_posts_from_folder(folder_path, keyword_column='关键词'):
     """
-    从指定文件夹加载所有CSV文件，合并为单个DataFrame。
+    从指定文件夹加载CSV文件，合并为单个DataFrame。
+    
+    支持两种数据结构：
+    1. 话题目录结构：folder_path/话题名文件夹/%23话题名%23.csv
+    2. 直接CSV结构：folder_path/*.csv
     
     参数：
     -----------
     folder_path : str or Path
-        包含CSV文件的文件夹路径
+        包含CSV文件或子目录的文件夹路径
     keyword_column : str, optional
         新增列的名称，用于存储关键词（默认为'关键词'）。
         
@@ -24,16 +28,16 @@ def load_posts_from_folder(folder_path, keyword_column='关键词'):
     -----------
     pd.DataFrame
         合并后的DataFrame，包含所有CSV数据及新增的关键词列。
-        关键词值为CSV文件名（不含扩展名）。
+        关键词值为目录名或CSV文件名（不含扩展名）。
         
     异常：
     -----------
     ValueError
-        当文件夹不存在或不包含CSV文件时抛出。
+        当文件夹不存在或不包含有效数据时抛出。
         
     示例：
     -----------
-    >>> data = load_posts_from_folder('./posts')
+    >>> data = load_posts_from_folder('./raw_posts')
     >>> print(data.head())
     >>> print(data['关键词'].unique())
     """
@@ -42,37 +46,87 @@ def load_posts_from_folder(folder_path, keyword_column='关键词'):
     if not folder_path.is_dir():
         raise ValueError(f"指定路径不存在或不是文件夹: {folder_path}")
     
-    # 获取文件夹内所有CSV文件
-    csv_files = list(folder_path.glob('*.csv'))
-    
-    if not csv_files:
-        raise ValueError(f"文件夹 {folder_path} 中未找到任何CSV文件")
+    # 列出目录中的所有内容
+    all_items = os.listdir(folder_path)
+    subdirs = [d for d in all_items 
+               if os.path.isdir(os.path.join(folder_path, d))]
+    csv_files = [f for f in all_items if f.endswith('.csv')]
     
     dfs = []
     
-    for csv_file in sorted(csv_files):
-        # 读取CSV文件
-        df = pd.read_csv(csv_file)
-
-        # 提取文件名（不含扩展名）作为关键词
-        keyword = csv_file.stem  # .stem 获取不含扩展名的文件名
-
-        # 如果文件名形如 %23关键词%23，则去掉前后 %23
-        if isinstance(keyword, str) and keyword.startswith('%23') and keyword.endswith('%23'):
-            keyword = keyword[3:-3]
-
-        # 新增关键词列
-        df[keyword_column] = keyword
-
-        dfs.append(df)
-        print(f"已加载: {csv_file.name} (行数: {len(df)}, 关键词: {keyword})")
+    # 情况1：话题目录结构（优先级：存在子目录且没有直接CSV文件）
+    if subdirs and not csv_files:
+        print(f"📁 检测到话题目录结构")
+        print(f"📁 找到 {len(subdirs)} 个话题文件夹\n")
+        
+        for folder in sorted(subdirs):
+            folder_path_full = folder_path / folder
+            csv_path = folder_path_full / f"{folder}.csv"
+            
+            if not os.path.exists(csv_path):
+                print(f"⚠️  找不到CSV文件: {csv_path}")
+                continue
+            
+            try:
+                # 读取CSV文件
+                df = pd.read_csv(csv_path, encoding='utf-8')
+                
+                # 提取话题名（移除前后的%23）
+                keyword = folder.lstrip('%23').rstrip('%23')
+                df[keyword_column] = keyword
+                
+                dfs.append(df)
+                print(f"✅ 已加载: {folder} ({len(df)} 行, 关键词: {keyword})")
+            except Exception as e:
+                print(f"❌ 读取失败: {csv_path} - {e}")
+    
+    # 情况2：直接CSV结构
+    elif csv_files:
+        print(f"📄 检测到直接CSV结构")
+        print(f"📄 找到 {len(csv_files)} 个CSV文件\n")
+        
+        for csv_file in sorted(csv_files):
+            csv_path = folder_path / csv_file
+            
+            try:
+                df = pd.read_csv(csv_path, encoding='utf-8')
+                
+                # 提取文件名（不含扩展名）作为关键词
+                keyword = Path(csv_file).stem
+                
+                # 如果文件名形如 %23关键词%23，则去掉前后 %23
+                if isinstance(keyword, str) and keyword.startswith('%23') and keyword.endswith('%23'):
+                    keyword = keyword[3:-3]
+                
+                df[keyword_column] = keyword
+                
+                dfs.append(df)
+                print(f"✅ 已加载: {csv_file} ({len(df)} 行, 关键词: {keyword})")
+            except Exception as e:
+                print(f"❌ 读取失败: {csv_path} - {e}")
+    
+    else:
+        raise ValueError(f"文件夹 {folder_path} 中未找到有效的CSV文件或话题目录")
+    
+    if not dfs:
+        raise ValueError(f"未能成功加载任何CSV文件")
     
     # 合并所有DataFrame
-    combined_df = pd.concat(dfs, ignore_index=True)
-    
-    print(f"\n合并完成！总行数: {len(combined_df)}, 关键词列表: {sorted(combined_df[keyword_column].unique().tolist())}")
-    
-    return combined_df
+    print("\n🔗 合并数据中...")
+    try:
+        combined_df = pd.concat(dfs, ignore_index=True)
+        
+        # 计算互动总数：点赞数 + 评论数 + 转发数
+        interaction_cols = ['点赞数', '评论数', '转发数']
+        if all(col in combined_df.columns for col in interaction_cols):
+            combined_df['互动总数'] = combined_df[interaction_cols].sum(axis=1, skipna=True)
+            print(f"✅ 已计算互动总数列")
+        
+        print(f"\n✅ 合并完成！总行数: {len(combined_df)}, 列数: {len(combined_df.columns)}")
+        print(f"📊 关键词列表: {sorted(combined_df[keyword_column].unique().tolist())}")
+        return combined_df
+    except Exception as e:
+        raise ValueError(f"合并失败: {e}\n请确保所有CSV文件的结构一致")
 
 
 def extract_top_topics(df, topics_column='话题', id_column='id'):
@@ -204,7 +258,7 @@ def dedupe_posts(df, keyword_col='关键词', text_col='微博正文_cleaned', t
                     return ''
                 text = str(text)
                 text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
-                text = re.sub(r'[^\\u4e00-\\u9fa5a-zA-Z0-9]', '', text)
+                text = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9]', '', text)
                 return text
 
             if '微博正文' in df_proc.columns:
@@ -263,9 +317,9 @@ def dedupe_posts(df, keyword_col='关键词', text_col='微博正文_cleaned', t
         else:
             sub_sorted = sub
         earliest_idx = sub_sorted.index[0]
-        sums = sub_sorted[sum_cols].sum()
-        sums = sums.reindex(sum_cols).fillna(0)
-        df_proc.loc[earliest_idx, sum_cols] = sums.values
+        # 只对要删除的行求和，加到保留的行上
+        sums_to_add = sub_sorted[sum_cols].iloc[1:].sum()
+        df_proc.loc[earliest_idx, sum_cols] = df_proc.loc[earliest_idx, sum_cols] + sums_to_add
         drop_indices.extend(list(sub_sorted.index[1:]))
 
     data_exact_deduped = df_proc.drop(index=drop_indices).reset_index(drop=True)
@@ -351,9 +405,9 @@ def dedupe_posts(df, keyword_col='关键词', text_col='微博正文_cleaned', t
                         else:
                             keep_idx, drop_idx = (idx_i, idx_j) if idx_i < idx_j else (idx_j, idx_i)
 
-                        # sum numeric cols from drop_idx into keep_idx
-                        sums = data_exact_deduped.loc[[keep_idx, drop_idx]][sum_cols].sum()
-                        data_exact_deduped.loc[keep_idx, sum_cols] = sums.values
+                        # 把删除行的互动数加到保留行上
+                        sums_to_add = data_exact_deduped.loc[drop_idx, sum_cols]
+                        data_exact_deduped.loc[keep_idx, sum_cols] = data_exact_deduped.loc[keep_idx, sum_cols] + sums_to_add
                         near_dup_drop.append(drop_idx)
                         near_dup_groups += 1
                         if debug:
@@ -400,3 +454,90 @@ def dedupe_posts(df, keyword_col='关键词', text_col='微博正文_cleaned', t
     print('\n已生成 DataFrame近似去重版')
 
     return data_final
+
+
+def get_context_posts(df, keyword_col='关键词', interaction_col='互动总数', 
+                      text_col='微博正文', top_n=20):
+    """
+    为每个关键词提取两类高质量帖子并合并。
+    
+    参数：
+    -----------
+    df : pd.DataFrame
+        输入DataFrame
+    keyword_col : str
+        关键词列名（默认'关键词'）
+    interaction_col : str
+        互动总数列名（默认'互动总数'）
+    text_col : str
+        微博正文列名（默认'微博正文'）
+    top_n : int
+        每个类别取前N条（默认20）
+        
+    返回值：
+    -----------
+    pd.DataFrame
+        包含以下内容的新DataFrame：
+        - 每个关键词下互动总数最高的前top_n条
+        - 每个关键词下去掉话题后正文最长的前top_n条
+        
+    说明：
+    -----------
+    - 话题被定义为#...#格式的文本
+    - 如果某个关键词的数据少于top_n，会返回全部数据
+    - 同一条帖子可能在两个类别中都出现，会被保留
+        
+    示例：
+    -----------
+    >>> df_context = get_context_posts(df_deduped)
+    >>> print(len(df_context))  # 应该接近 9*40=360
+    """
+    import re
+    
+    def remove_topics(text):
+        """移除#...#格式的话题"""
+        if pd.isna(text):
+            return ''
+        text = str(text)
+        # 移除#...#格式的话题
+        text = re.sub(r'#[^#]*#', '', text)
+        return text
+    
+    all_dfs = []
+    keywords = df[keyword_col].unique()
+    
+    print(f"处理 {len(keywords)} 个关键词...\n")
+    
+    for kw in keywords:
+        sub_df = df[df[keyword_col] == kw].copy()
+        
+        # 类别1：互动总数最高的前top_n条
+        if interaction_col in sub_df.columns:
+            top_interaction = sub_df.nlargest(top_n, interaction_col)
+        else:
+            top_interaction = sub_df.head(top_n)
+        
+        # 类别2：去掉话题后，正文最长的前top_n条
+        if text_col in sub_df.columns:
+            sub_df_copy = sub_df.copy()
+            sub_df_copy['正文_去话题'] = sub_df_copy[text_col].apply(remove_topics)
+            sub_df_copy['正文长度'] = sub_df_copy['正文_去话题'].str.len()
+            top_length = sub_df_copy.nlargest(top_n, '正文长度').drop(columns=['正文_去话题', '正文长度'])
+        else:
+            top_length = sub_df.head(top_n)
+        
+        # 合并两个类别（保留重复）
+        kw_combined = pd.concat([top_interaction, top_length], ignore_index=False)
+        # 重置索引以便合并
+        kw_combined = kw_combined.reset_index(drop=True)
+        
+        all_dfs.append(kw_combined)
+        
+        print(f"✅ {kw}: 互动top{top_n}({len(top_interaction)}条) + 长度top{top_n}({len(top_length)}条) = {len(kw_combined)}条")
+    
+    # 合并所有关键词的数据
+    df_context = pd.concat(all_dfs, ignore_index=True)
+    
+    print(f"\n✅ 上下文数据提取完成！总计 {len(df_context)} 条")
+    
+    return df_context
